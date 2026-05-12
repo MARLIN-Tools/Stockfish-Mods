@@ -119,6 +119,20 @@ Engine::Engine(std::optional<std::string> path) :
 
     options.add("UCI_ShowWDL", Option(false));
 
+    options.add("Trappy Minimax", Option(true));
+
+    options.add("Trappy Max Ply", Option(5, 1, 12));
+
+    options.add("Trappy Assessment", Option("median var best var last", "median"));
+
+    options.add("Trappy Max Sacrifice", Option(200, 0, 2000));
+
+    options.add("Trappy Bonus Cap", Option(300, 0, 2000));
+
+    options.add("Trappy Min Profit", Option(50, 0, 2000));
+
+    options.add("Trappy Trace", Option(false));
+
     options.add(  //
       "SyzygyPath", Option("", [](const Option& o) {
           Tablebases::init(o);

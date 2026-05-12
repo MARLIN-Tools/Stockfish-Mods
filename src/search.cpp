@@ -188,6 +188,7 @@ void Search::Worker::start_searching() {
 
     accumulatorStack.reset();
     lastIterationPV.clear();
+    trappy.start_search(Trappy::make_config(options), rootPos.side_to_move());
 
     // Non-main threads go directly to iterative_deepening()
     if (!is_mainthread())
@@ -328,6 +329,7 @@ bool Search::Worker::iterative_deepening() {
            && !(limits.depth && mainThread && rootDepth >= limits.depth))
     {
         rootDepth++;
+        trappy.start_iteration(rootDepth);
 
         // Age out PV variability metric and signal the start of a new iteration.
         if (mainThread)
@@ -1036,7 +1038,12 @@ moves_loop:  // When in check, search starts here
 
     value = bestValue;
 
-    int moveCount = 0;
+    const bool trappyCollectNode = trappy.collecting_replies(pos.side_to_move(), ss->ply);
+    const bool trappyTrapNode =
+      trappy.trap_setting_node(pos.side_to_move(), ss->ply) && !(rootNode && tbConfig.rootInTB);
+
+    int   moveCount       = 0;
+    Value normalBestValue = -VALUE_INFINITE;
 
     // Step 13. Loop through all pseudo-legal moves until no moves remain
     // or a beta cutoff occurs.
@@ -1219,10 +1226,13 @@ moves_loop:  // When in check, search starts here
                 extension = -2;
         }
 
-        uint64_t nodeCount = rootNode ? uint64_t(nodes) : 0;
+        uint64_t nodeCount          = rootNode ? uint64_t(nodes) : 0;
+        Key      trappyReplyNodeKey = 0;
 
         // Step 16. Make the move
         do_move(pos, move, st, givesCheck, ss);
+        if (trappyTrapNode)
+            trappyReplyNodeKey = pos.key();
 
         // Add extension to new depth
         newDepth += extension;
@@ -1341,9 +1351,29 @@ moves_loop:  // When in check, search starts here
         if (threads.stop.load(std::memory_order_relaxed))
             return VALUE_ZERO;
 
+        if (trappyCollectNode)
+            trappy.record_reply(posKey, move, ss->ply, value);
+
+        const Value    normalValue = value;
+        Trappy::Result trappyValue =
+          trappyTrapNode ? trappy.adjust_move(trappyReplyNodeKey, move, ss->ply + 1, normalValue,
+                                              std::max(normalBestValue, normalValue))
+                         : Trappy::Result{};
+        normalBestValue = std::max(normalBestValue, normalValue);
+
+        if (trappyValue.applied)
+            value = trappyValue.adjustedScore;
+
         if (rootNode)
         {
             RootMove& rm = *std::find(rootMoves.begin(), rootMoves.end(), move);
+            rm.trappy    = trappyValue;
+            if (!rm.trappy.applied)
+            {
+                rm.trappy.trapMove      = move;
+                rm.trappy.normalScore   = normalValue;
+                rm.trappy.adjustedScore = value;
+            }
 
             rm.effort += nodes - nodeCount;
 
@@ -1374,16 +1404,24 @@ moves_loop:  // When in check, search starts here
 
                 rm.pv.resize(1);
 
-                assert((ss + 1)->pv);
-
-                for (Move pvMove : *(ss + 1)->pv)
-                    rm.pv.push_back(pvMove);
+                if ((ss + 1)->pv)
+                    for (Move pvMove : *(ss + 1)->pv)
+                        rm.pv.push_back(pvMove);
 
                 // We record how often the best move has been changed in each iteration.
                 // This information is used for time management. In MultiPV mode,
                 // we must take care to only do this for the first PV line.
                 if (moveCount > 1 && !pvIdx)
                     ++bestMoveChanges;
+
+                if (rm.trappy.applied && trappy.trace_enabled() && is_mainthread())
+                    sync_cout << "info string trappy move "
+                              << UCIEngine::move(move, rootPos.is_chess960()) << " reply "
+                              << UCIEngine::move(rm.trappy.trapReply, rootPos.is_chess960())
+                              << " normal " << rm.trappy.normalScore << " adjusted "
+                              << rm.trappy.adjustedScore << " profit " << rm.trappy.profit
+                              << " factor " << rm.trappy.trappinessPermille << " quality "
+                              << rm.trappy.quality << " bonus " << rm.trappy.bonus << sync_endl;
             }
             else
                 // All other moves but the PV, are set to the lowest value: this
@@ -1413,15 +1451,18 @@ moves_loop:  // When in check, search starts here
                     // (*Scaler) Infrequent and small updates scale well
                     ss->cutoffCnt += (extension < 2) || PvNode;
                     assert(value >= beta);  // Fail high
-                    break;
+                    if (!trappyCollectNode)
+                        break;
                 }
+                else
+                {
+                    // Reduce other moves if we have found at least one score improvement
+                    if (depth > 2 && depth < 13 && !is_decisive(value))
+                        depth -= 2;
 
-                // Reduce other moves if we have found at least one score improvement
-                if (depth > 2 && depth < 13 && !is_decisive(value))
-                    depth -= 2;
-
-                assert(depth > 0);
-                alpha = value;  // Update alpha! Always alpha < beta
+                    assert(depth > 0);
+                    alpha = value;  // Update alpha! Always alpha < beta
+                }
             }
         }
 
@@ -2202,6 +2243,18 @@ void SearchManager::pv(Search::Worker&           worker,
         info.hashfull  = tt.hashfull();
 
         updates.onUpdateFull(info);
+
+        if (worker.options["Trappy Trace"] && rootMoves[i].trappy.applied)
+            sync_cout << "info string trappy multipv " << i + 1 << " move "
+                      << UCIEngine::move(rootMoves[i].trappy.trapMove, pos.is_chess960())
+                      << " reply "
+                      << UCIEngine::move(rootMoves[i].trappy.trapReply, pos.is_chess960())
+                      << " normal " << rootMoves[i].trappy.normalScore << " adjusted "
+                      << rootMoves[i].trappy.adjustedScore << " profit "
+                      << rootMoves[i].trappy.profit << " factor "
+                      << rootMoves[i].trappy.trappinessPermille << " quality "
+                      << rootMoves[i].trappy.quality << " bonus " << rootMoves[i].trappy.bonus
+                      << sync_endl;
     }
 }
 

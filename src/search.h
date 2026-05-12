@@ -41,6 +41,7 @@
 #include "score.h"
 #include "syzygy/tbprobe.h"
 #include "timeman.h"
+#include "trappy.h"
 #include "types.h"
 
 namespace Stockfish {
@@ -136,18 +137,19 @@ struct RootMove {
         return m.score != score ? m.score < score : m.previousScore < previousScore;
     }
 
-    uint64_t effort           = 0;
-    Value    score            = -VALUE_INFINITE;
-    Value    previousScore    = -VALUE_INFINITE;
-    Value    averageScore     = -VALUE_INFINITE;
-    Value    meanSquaredScore = -VALUE_INFINITE * VALUE_INFINITE;
-    Value    uciScore         = -VALUE_INFINITE;
-    bool     scoreLowerbound  = false;
-    bool     scoreUpperbound  = false;
-    int      selDepth         = 0;
-    int      tbRank           = 0;
-    Value    tbScore;
-    PVMoves  pv;
+    uint64_t       effort           = 0;
+    Value          score            = -VALUE_INFINITE;
+    Value          previousScore    = -VALUE_INFINITE;
+    Value          averageScore     = -VALUE_INFINITE;
+    Value          meanSquaredScore = -VALUE_INFINITE * VALUE_INFINITE;
+    Value          uciScore         = -VALUE_INFINITE;
+    bool           scoreLowerbound  = false;
+    bool           scoreUpperbound  = false;
+    int            selDepth         = 0;
+    int            tbRank           = 0;
+    Value          tbScore;
+    Trappy::Result trappy;
+    PVMoves        pv;
 };
 
 using RootMoves = std::vector<RootMove>;
@@ -402,6 +404,7 @@ class Worker {
     ThreadPool&                                              threads;
     TranspositionTable&                                      tt;
     const LazyNumaReplicatedSystemWide<Eval::NNUE::Network>& network;
+    Trappy::Context                                          trappy;
 
     // Used by NNUE
     Eval::NNUE::AccumulatorStack  accumulatorStack;
